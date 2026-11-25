@@ -133,6 +133,17 @@ type Session struct {
 // Import extracts a session from the named source. If several cookie DBs
 // (browser profiles) contain a Notion login, the first one with token_v2 wins.
 func Import(sourceName string) (*Session, error) {
+	if sourceName == "auto" || sourceName == "" {
+		var errs []string
+		for _, src := range Sources {
+			s, err := Import(src.Name)
+			if err == nil {
+				return s, nil
+			}
+			errs = append(errs, src.Name+": "+err.Error())
+		}
+		return nil, fmt.Errorf("no Notion login found:\n  %s", strings.Join(errs, "\n  "))
+	}
 	src, err := FindSource(sourceName)
 	if err != nil {
 		return nil, err

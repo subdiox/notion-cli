@@ -149,6 +149,7 @@ func (e *env) commit(w *notion.Writer, dry bool) error {
 
 // applyPageProps emits ops setting title/properties/icon/cover on a page.
 func (e *env) applyPageProps(w *notion.Writer, pageID string, coll *notion.Record, props map[string]any, o *writeOpts) error {
+	current := e.store().Records.Block(pageID)
 	var defs []notion.PropDef
 	if coll != nil {
 		defs = notion.Schema(coll, nil)
@@ -177,6 +178,42 @@ func (e *env) applyPageProps(w *notion.Writer, pageID string, coll *notion.Recor
 		val, err := enc.Encode(*d, v)
 		if err != nil {
 			return err
+		}
+		if d.Type == "relation" {
+			// Relations can only be changed through relation primitives.
+			want := map[string]bool{}
+			var order []string
+			for _, seg := range notion.DecodeRich(val.([]any)) {
+				for _, deco := range seg.Decos {
+					if len(deco) > 1 && deco[0] == "p" {
+						id := fmt.Sprint(deco[1])
+						if !want[id] {
+							want[id] = true
+							order = append(order, id)
+						}
+					}
+				}
+			}
+			have := map[string]bool{}
+			if current != nil {
+				for _, seg := range notion.DecodeRich(current.Prop(d.ID)) {
+					for _, deco := range seg.Decos {
+						if len(deco) > 1 && deco[0] == "p" {
+							id := fmt.Sprint(deco[1])
+							have[id] = true
+							if !want[id] {
+								w.Tx.BlockProperty(pageID, d.ID, "removeRelation", map[string]any{"id": id, "spaceId": w.Tx.SpaceID})
+							}
+						}
+					}
+				}
+			}
+			for _, id := range order {
+				if !have[id] {
+					w.Tx.BlockProperty(pageID, d.ID, "addRelationAfter", map[string]any{"id": id, "spaceId": w.Tx.SpaceID})
+				}
+			}
+			continue
 		}
 		w.Tx.Set("block", pageID, []string{"properties", d.ID}, val)
 	}

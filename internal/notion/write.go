@@ -241,6 +241,11 @@ func specKey(s *BlockSpec) string {
 // Sync makes parent's children match specs with minimal operations, keeping
 // IDs of unchanged blocks (so comments, links and backlinks survive).
 func (w *Writer) Sync(parent *Record, specs []*BlockSpec) error {
+	return w.SyncAt(parent, specs, "")
+}
+
+// SyncAt is Sync where insertions before the first kept block go after `start`.
+func (w *Writer) SyncAt(parent *Record, specs []*BlockSpec, start string) error {
 	keepRest := false
 	var clean []*BlockSpec
 	for _, s := range specs {
@@ -285,7 +290,7 @@ func (w *Writer) Sync(parent *Record, specs []*BlockSpec) error {
 		}
 	}
 
-	prev := "" // last block in the final order
+	prev := start // last block in the final order
 	var pendingOld []int
 	var pendingNew []int
 	flush := func() error {

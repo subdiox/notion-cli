@@ -225,6 +225,11 @@ func (s *Store) PrefetchMentions(ctx context.Context, blocks []*Record) error {
 				add(arr)
 			}
 		}
+		if t := b.Type(); t == "collection_view" || t == "collection_view_page" {
+			if cid := b.Str("collection_id"); cid != "" {
+				ptrs = append(ptrs, Pointer{Table: "collection", ID: cid, SpaceID: b.SpaceID})
+			}
+		}
 		if b.Type() == "alias" {
 			if p, ok := b.Format()["alias_pointer"].(map[string]any); ok {
 				ptrs = append(ptrs, Pointer{Table: "block", ID: str(p["id"])})

@@ -219,11 +219,8 @@ func (e *PropEncoder) ensureOption(d PropDef, value string) {
 func (e *PropEncoder) ApplyNewOptions(tx *Tx, coll *Record) {
 	for propID, opts := range e.NewOptions {
 		for _, o := range opts {
-			tx.Ops = append(tx.Ops, Op{
-				Pointer: tx.ptr("collection", coll.ID), Path: []string{"schema", propID, "options"},
-				Command: "keyedObjectListAfter",
-				Args:    map[string]any{"value": map[string]any{"id": o.ID, "value": o.Value, "color": o.Color}},
-			})
+			tx.Schema(coll.ID, []string{"schema", propID, "options"}, "keyedObjectListAfter",
+				map[string]any{"value": map[string]any{"id": o.ID, "value": o.Value, "color": o.Color}})
 		}
 	}
 }

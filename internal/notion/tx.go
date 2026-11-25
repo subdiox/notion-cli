@@ -77,6 +77,25 @@ func (t *Tx) ListRemove(table, parent string, path []string, id string) {
 	t.Ops = append(t.Ops, Op{Pointer: t.ptr(table, parent), Path: path, Command: "listRemove", Args: map[string]any{"id": id}})
 }
 
+// Schema emits an updateCollectionPropertySchema op (the only way the server
+// accepts schema changes): path is below the collection, e.g. ["schema", id, "name"].
+func (t *Tx) Schema(collID string, path []string, command string, args any) {
+	t.Ops = append(t.Ops, Op{Pointer: t.ptr("collection", collID), Path: path, Command: "updateCollectionPropertySchema",
+		Args: map[string]any{"primitiveOp": map[string]any{"command": command, "args": args}}})
+}
+
+// BlockProperty emits an updateBlockPropertyValue op (needed for relations).
+func (t *Tx) BlockProperty(blockID, propID, command string, args any) {
+	t.Ops = append(t.Ops, Op{Pointer: t.ptr("block", blockID), Path: []string{"properties", propID}, Command: "updateBlockPropertyValue",
+		Args: map[string]any{"primitiveOp": map[string]any{"command": command, "args": args}}})
+}
+
+// DeleteProperty soft-deletes a property (moves it to deleted_schema).
+func (t *Tx) DeleteProperty(collID, propID string, def any) {
+	t.Ops = append(t.Ops, Op{Pointer: t.ptr("collection", collID), Path: []string{"deleted_schema", propID},
+		Command: "softDeleteOrReinstateCollectionProperty", Args: map[string]any{"propertySchema": def}})
+}
+
 // Touch updates last-edited metadata of a record.
 func (t *Tx) Touch(table, id string) {
 	t.Update(table, id, nil, map[string]any{

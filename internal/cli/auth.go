@@ -36,14 +36,14 @@ which may show an access prompt.`,
 			if err != nil {
 				return fmt.Errorf("session imported but verification failed: %w", err)
 			}
-			fmt.Printf("Imported session from %s (%s)\n", from, s.Origin)
+			fmt.Printf("Imported session from %s (%s)\n", s.Source, s.Origin)
 			for _, u := range users {
 				fmt.Printf("  %s <%s> %s\n", u.Name, u.Email, u.ID)
 			}
 			return nil
 		},
 	}
-	importCmd.Flags().StringVar(&from, "from", "desktop", "source: "+sourceNames())
+	importCmd.Flags().StringVar(&from, "from", "auto", "source: auto (first that works), "+sourceNames())
 
 	tokenCmd := &cobra.Command{
 		Use:   "set-token <token_v2>",
