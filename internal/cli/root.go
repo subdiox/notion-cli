@@ -60,6 +60,7 @@ type env struct {
 	out    io.Writer
 	// lastRowIDs are the rows printed by the last database fetch (for crawling).
 	lastRowIDs []string
+	assets     *assetRegistry
 }
 
 func (e *env) w() io.Writer {

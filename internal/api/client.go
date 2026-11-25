@@ -286,25 +286,54 @@ func truncate(s string, n int) string {
 
 // Download GETs a URL with the session cookies (needed for file.notion.so / signed URLs).
 func (c *Client) Download(ctx context.Context, rawURL string, w io.Writer) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return "", err
-	}
 	u, _ := url.Parse(rawURL)
-	if u != nil && (strings.HasSuffix(u.Host, "notion.so") || strings.HasSuffix(u.Host, "notion.com") || strings.HasSuffix(u.Host, "notion-static.com") || strings.HasSuffix(u.Host, "notionusercontent.com")) {
-		c.setHeaders(req)
-	} else {
-		req.Header.Set("User-Agent", userAgent)
+	notionHost := u != nil && (strings.HasSuffix(u.Host, "notion.so") || strings.HasSuffix(u.Host, "notion.com") || strings.HasSuffix(u.Host, "notion-static.com") || strings.HasSuffix(u.Host, "notionusercontent.com"))
+	key := "download"
+	if u != nil {
+		key += ":" + u.Host
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return "", err
+	th := c.throttle(key)
+	for attempt := 0; ; attempt++ {
+		if err := th.acquire(ctx); err != nil {
+			return "", err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return "", err
+		}
+		if notionHost {
+			c.setHeaders(req)
+		} else {
+			req.Header.Set("User-Agent", userAgent)
+		}
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			if attempt < 3 {
+				time.Sleep(backoff(attempt, ""))
+				continue
+			}
+			return "", err
+		}
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			ra := resp.Header.Get("Retry-After")
+			resp.Body.Close()
+			if attempt < 12 {
+				d := max(backoff(attempt, ra), 2*time.Second)
+				r := th.limited(d)
+				if c.Debug {
+					fmt.Fprintf(os.Stderr, "rate limited on %s; pausing %s, rate now %.1f req/s\n", key, d, r)
+				}
+				continue
+			}
+		}
+		if resp.StatusCode/100 != 2 {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+			resp.Body.Close()
+			return "", fmt.Errorf("download %s: HTTP %d: %s", rawURL, resp.StatusCode, b)
+		}
+		th.success()
+		_, err = io.Copy(w, resp.Body)
+		resp.Body.Close()
+		return resp.Header.Get("Content-Type"), err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		return "", fmt.Errorf("download %s: HTTP %d: %s", rawURL, resp.StatusCode, b)
-	}
-	_, err = io.Copy(w, resp.Body)
-	return resp.Header.Get("Content-Type"), err
 }

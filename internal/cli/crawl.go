@@ -83,7 +83,7 @@ func fileNameFor(title, id string) string {
 // has its own record store and output buffer.
 func (e *env) fork(out *bytes.Buffer) *env {
 	c := *e.client
-	return &env{ctx: e.ctx, client: &c, cfg: e.cfg, ws: e.ws, out: out}
+	return &env{ctx: e.ctx, client: &c, cfg: e.cfg, ws: e.ws, out: out, assets: e.assets}
 }
 
 type crawler struct {
@@ -199,6 +199,9 @@ func (c *crawler) run(j crawlJob) (res crawlResult) {
 // database row and their sub-pages. Pages are fetched concurrently.
 func (e *env) crawl(root *notion.Record, o fetchOpts, co crawlOpts) error {
 	start := time.Now()
+	if e.assets == nil {
+		e.assets = &assetRegistry{}
+	}
 	c := &crawler{e: e, o: o, co: co, cache: &sharedCache{recs: map[string]*notion.Record{}},
 		seen: map[string]bool{root.ID: true}, jobs: make(chan crawlJob, 4096)}
 	n := co.concurrency

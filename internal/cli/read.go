@@ -132,18 +132,20 @@ func (e *env) renderer(o fetchOpts, blocks []*notion.Record) (*notion.Renderer, 
 		}
 		type job struct{ id, url, dst string }
 		var jobs []job
-		used := map[string]bool{}
+		if e.assets == nil {
+			e.assets = &assetRegistry{}
+		}
 		for i, b := range owners {
 			u, ok := resolved[b.ID]
 			if !ok {
 				continue
 			}
-			name := notion.FileName(srcs[i], b.ID)
-			if used[name] {
-				name = b.ID[:8] + "-" + name
+			dst, isNew := e.assets.claim(o.assets, srcs[i], notion.FileName(srcs[i], b.ID), b.ID)
+			if !isNew {
+				resolved[b.ID] = dst // same file already saved (or being saved) for another block
+				continue
 			}
-			used[name] = true
-			jobs = append(jobs, job{b.ID, u, filepath.Join(o.assets, name)})
+			jobs = append(jobs, job{b.ID, u, dst})
 		}
 		var mu sync.Mutex
 		var wg sync.WaitGroup
@@ -180,6 +182,66 @@ func (e *env) renderer(o fetchOpts, blocks []*notion.Record) (*notion.Renderer, 
 		return src
 	}
 	return r, nil
+}
+
+// assetRegistry maps file sources to local paths for --download-assets. It is
+// shared by all workers of a recursive fetch: the same source is saved once,
+// and different sources with the same file name get distinct names.
+type assetRegistry struct {
+	mu    sync.Mutex
+	bySrc map[string]string
+	names map[string]bool
+}
+
+func (a *assetRegistry) claim(dir, src, name, blockID string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.bySrc == nil {
+		a.bySrc, a.names = map[string]string{}, map[string]bool{}
+	}
+	if dst, ok := a.bySrc[src]; ok {
+		return dst, false
+	}
+	if a.names[name] {
+		name = notion.CompactID(blockID)[:8] + "-" + name
+	}
+	a.names[name] = true
+	dst := filepath.Join(dir, name)
+	a.bySrc[src] = dst
+	return dst, true
+}
+
+// reachable returns the live blocks rendered under root (not sub-pages), so
+// assets of deleted or unrelated cached blocks are not downloaded.
+func (e *env) reachable(root string) []*notion.Record {
+	st := e.store()
+	var out []*notion.Record
+	seen := map[string]bool{}
+	var walk func(id string)
+	walk = func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		b := st.Records.Block(id)
+		if b == nil || !b.Alive() {
+			return
+		}
+		out = append(out, b)
+		if id != root && notion.IsPageType(b.Type()) {
+			return
+		}
+		for _, c := range b.Content() {
+			walk(c)
+		}
+		if b.Type() == "transclusion_reference" {
+			if p, ok := b.Format()["transclusion_reference_pointer"].(map[string]any); ok {
+				walk(fmt.Sprint(p["id"]))
+			}
+		}
+	}
+	walk(root)
+	return out
 }
 
 func (e *env) cachedBlocks() []*notion.Record {
@@ -284,7 +346,7 @@ func (e *env) printPage(page *notion.Record, o fetchOpts) error {
 		fields = append(fields, [2]any{"in_trash", true})
 	}
 
-	r, err := e.renderer(o, blocks)
+	r, err := e.renderer(o, e.reachable(page.ID))
 	if err != nil {
 		return err
 	}
@@ -335,7 +397,7 @@ func (e *env) printBlock(blk *notion.Record, o fetchOpts) error {
 	if err := st.PrefetchMentions(e.ctx, blocks); err != nil {
 		return err
 	}
-	r, err := e.renderer(o, blocks)
+	r, err := e.renderer(o, e.reachable(blk.ID))
 	if err != nil {
 		return err
 	}
