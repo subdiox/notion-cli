@@ -147,3 +147,7 @@ New pages: a `<page>Title</page>` without `url` creates a sub-page.
 go test ./...
 notion --debug <command>   # logs every API request/response
 ```
+
+## License
+
+[MIT](LICENSE)
