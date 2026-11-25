@@ -14,6 +14,9 @@ import (
 	"github.com/subdiox/notion-cli/internal/notion"
 )
 
+// Version is set at build time with -ldflags "-X github.com/subdiox/notion-cli/internal/cli.Version=...".
+var Version = "dev"
+
 type globalFlags struct {
 	json  bool
 	debug bool
@@ -32,6 +35,7 @@ Notion desktop app or a browser (token_v2), so it can access every workspace
 the user can see — including workspaces where the user is only a guest.
 
 Designed for AI agents: Markdown output by default, --json for raw records.`,
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
