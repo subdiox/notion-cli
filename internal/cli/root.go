@@ -40,7 +40,7 @@ Designed for AI agents: Markdown output by default, --json for raw records.`,
 	pf.StringVar(&gf.space, "space", os.Getenv("NOTION_SPACE"), "workspace (name, domain or ID) for this command")
 	pf.StringVar(&gf.user, "user", os.Getenv("NOTION_USER"), "account (email or user ID) for this command")
 
-	root.AddCommand(newAuthCmd(), newSpaceCmd(), newFetchCmd(), newSearchCmd(), newDBCmd(), newUserCmd(), newRawCmd())
+	root.AddCommand(newAuthCmd(), newSpaceCmd(), newFetchCmd(), newSearchCmd(), newPageCmd(), newDBCmd(), newUserCmd(), newExportCmd(), newRawCmd())
 	return root
 }
 

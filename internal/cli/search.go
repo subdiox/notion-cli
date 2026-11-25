@@ -12,15 +12,15 @@ import (
 )
 
 type searchHit struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	URL       string `json:"url"`
-	Type      string `json:"type"`
-	Path      string `json:"path,omitempty"`
-	Snippet   string `json:"snippet,omitempty"`
-	Space     string `json:"space"`
-	BlockID   string `json:"matched_block_id,omitempty"`
-	EditedAt  string `json:"last_edited_time,omitempty"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Type     string `json:"type"`
+	Path     string `json:"path,omitempty"`
+	Snippet  string `json:"snippet,omitempty"`
+	Space    string `json:"space"`
+	BlockID  string `json:"matched_block_id,omitempty"`
+	EditedAt string `json:"last_edited_time,omitempty"`
 }
 
 var highlightTag = regexp.MustCompile(`</?[A-Za-z0-9]{6,12}>`)
@@ -131,17 +131,17 @@ func (e *env) search(sp notion.Space, query string, limit int, sortBy string, an
 		"spaceId": sp.ID,
 		"limit":   limit,
 		"filters": map[string]any{
-			"isDeletedOnly":                          trashed,
-			"excludeTemplates":                       false,
-			"navigableBlockContentOnly":              titles,
-			"requireEditPermissions":                 false,
+			"isDeletedOnly":                           trashed,
+			"excludeTemplates":                        false,
+			"navigableBlockContentOnly":               titles,
+			"requireEditPermissions":                  false,
 			"includePublicPagesWithoutExplicitAccess": false,
-			"ancestors":                              ancestors,
-			"createdBy":                              []any{},
-			"editedBy":                               []any{},
-			"lastEditedTime":                         map[string]any{},
-			"createdTime":                            map[string]any{},
-			"inTeams":                                []any{},
+			"ancestors":                               ancestors,
+			"createdBy":                               []any{},
+			"editedBy":                                []any{},
+			"lastEditedTime":                          map[string]any{},
+			"createdTime":                             map[string]any{},
+			"inTeams":                                 []any{},
 		},
 		"sort":   sort,
 		"source": "quick_find_input_change",

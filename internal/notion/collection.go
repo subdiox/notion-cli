@@ -293,13 +293,13 @@ func PropDisplay(page *Record, d PropDef, r Resolver) string {
 // --- query -------------------------------------------------------------------
 
 type QueryOptions struct {
-	ViewID      string
-	Limit       int
-	Search      string
-	Filter      any // internal filter JSON; nil = view filter
-	Sort        any // internal sort JSON; nil = view sort
-	IgnoreView  bool
-	TimeZone    string
+	ViewID     string
+	Limit      int
+	Search     string
+	Filter     any // internal filter JSON; nil = view filter
+	Sort       any // internal sort JSON; nil = view sort
+	IgnoreView bool
+	TimeZone   string
 }
 
 type QueryResult struct {

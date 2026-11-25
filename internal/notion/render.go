@@ -211,7 +211,7 @@ func (r *Renderer) renderBlock(b *strings.Builder, blk *Record, depth, num int) 
 		if p, ok := f["alias_pointer"].(map[string]any); ok {
 			target = str(p["id"])
 		}
-		r.line(b, depth, fmt.Sprintf(`<mention-page url="%s">%s</mention-page>`, PageURL(target), html.EscapeString(r.Store.PageTitle(target))))
+		r.line(b, depth, fmt.Sprintf(`<link-to-page url="%s">%s</link-to-page>`, PageURL(target), html.EscapeString(r.Store.PageTitle(target))))
 	case "column_list":
 		r.line(b, depth, "<columns>")
 		for _, cid := range blk.Content() {

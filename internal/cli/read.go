@@ -14,11 +14,11 @@ import (
 )
 
 type fetchOpts struct {
-	signed   bool
-	assets   string
-	depth    int
-	rows     int
-	noBody   bool
+	signed bool
+	assets string
+	depth  int
+	rows   int
+	noBody bool
 }
 
 func newFetchCmd() *cobra.Command {
