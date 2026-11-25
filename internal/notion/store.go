@@ -113,6 +113,25 @@ func (s *Store) Role(ctx context.Context, table, id string) (string, string, err
 // LoadPage loads all blocks of a page via loadPageChunk (following cursors),
 // then fills any children the chunks omitted. Sub-pages are not descended.
 func (s *Store) LoadPage(ctx context.Context, pageID string) error {
+	// loadPageChunk is rate limited separately from (and much more strictly
+	// than) syncRecordValues. While it is limited, load the tree level by level
+	// with syncRecordValues instead.
+	if !s.C.Degraded("loadPageChunk") {
+		err := s.loadPageChunks(api.WithoutRateLimitRetry(ctx), pageID)
+		if err == nil {
+			return s.LoadDescendants(ctx, pageID)
+		}
+		if !api.IsRateLimited(err) {
+			return err
+		}
+	}
+	if err := s.Fetch(ctx, []Pointer{{Table: "block", ID: pageID}}, false); err != nil {
+		return err
+	}
+	return s.LoadDescendants(ctx, pageID)
+}
+
+func (s *Store) loadPageChunks(ctx context.Context, pageID string) error {
 	cursor := map[string]any{"stack": []any{}}
 	for chunk := 0; chunk < 200; chunk++ {
 		var resp struct {
@@ -131,11 +150,11 @@ func (s *Store) LoadPage(ctx context.Context, pageID string) error {
 			return err
 		}
 		if len(resp.Cursor.Stack) == 0 {
-			break
+			return nil
 		}
 		cursor = map[string]any{"stack": resp.Cursor.Stack}
 	}
-	return s.LoadDescendants(ctx, pageID)
+	return nil
 }
 
 // LoadDescendants makes sure every non-page descendant block of root is cached.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -52,6 +53,16 @@ type env struct {
 	ws     *notion.Workspaces
 	st     *notion.Store
 	users  []spaceUser
+	out    io.Writer
+	// lastRowIDs are the rows printed by the last database fetch (for crawling).
+	lastRowIDs []string
+}
+
+func (e *env) w() io.Writer {
+	if e.out != nil {
+		return e.out
+	}
+	return os.Stdout
 }
 
 // newEnv builds an API client. Space resolution happens lazily via resolveSpace.

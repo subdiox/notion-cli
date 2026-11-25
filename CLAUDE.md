@@ -13,7 +13,8 @@ user's `token_v2` session cookie. Primary users are AI agents: Markdown output b
 - `internal/notion` — record model, `Store` (record cache), Markdown renderer
   (`render.go`) and parser (`mdblock.go`, `mdinline.go`), `Writer` (create / diff-sync),
   `Tx` (transaction ops), collections and property encoding.
-- `internal/cli` — cobra commands. `env.target(ref, table)` resolves a URL/ID and picks the
+- `internal/cli` — cobra commands (`crawl.go` = `fetch -r`: worker pool, each worker forks
+  the env with its own `Store`, sharing the client and a read-only record cache). `env.target(ref, table)` resolves a URL/ID and picks the
   logged-in account that can access it.
 
 ## Development
@@ -58,6 +59,12 @@ user's `token_v2` session cookie. Primary users are AI agents: Markdown output b
 - Uploads: `getUploadFileUrl {bucket:"secure", name, contentType, record, contentLength}` →
   PUT to `signedPutUrl` → store `url` (`attachment:<fileId>:<name>`) in `properties.source`
   and `file_ids`. Download via `getSignedFileUrls {urls:[{url, permissionRecord}]}`.
+- Rate limits are **per endpoint**. `loadPageChunk` is limited hard (429
+  `UserRateLimitResponse`, no `Retry-After`) after a few hundred fast calls, while
+  `syncRecordValues` and `queryCollection` keep working. The client therefore keeps an
+  adaptive (AIMD) throttle per endpoint, and `Store.LoadPage` falls back to level-by-level
+  `syncRecordValues` while `loadPageChunk` is degraded. Never stress-test the limits on
+  purpose; test with real workloads.
 - Async jobs (`exportBlock`, `duplicateBlock`): `enqueueTask` then poll `getTasks`.
 - When an operation's shape is unknown, grep the web client's JS chunks
   (`https://app.notion.com/_assets/*.js`, listed in the `/login` HTML) for the command name.

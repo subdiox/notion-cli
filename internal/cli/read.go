@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,8 @@ type fetchOpts struct {
 
 func newFetchCmd() *cobra.Command {
 	var o fetchOpts
+	var co crawlOpts
+	var recursive bool
 	cmd := &cobra.Command{
 		Use:     "fetch <url|id>",
 		Aliases: []string{"get", "read", "cat"},
@@ -50,6 +53,9 @@ them locally and link to the local paths.`,
 				}
 				return err
 			}
+			if recursive {
+				return e.crawl(blk, o, co)
+			}
 			switch blk.Type() {
 			case "collection_view_page", "collection_view":
 				_, viewID, _, _ := notion.ParseRef(args[0])
@@ -67,6 +73,11 @@ them locally and link to the local paths.`,
 	f.IntVar(&o.depth, "depth", 0, "max nesting depth to render (0 = unlimited)")
 	f.IntVar(&o.rows, "rows", 50, "number of rows to show for databases")
 	f.BoolVar(&o.noBody, "props-only", false, "print only front matter / properties")
+	f.BoolVarP(&recursive, "recursive", "r", false, "also read all sub-pages, databases and every database row (concurrently)")
+	f.StringVarP(&co.out, "output", "o", "", "with -r: write one .md per page into DIR plus index.md (default: concatenate to stdout)")
+	f.IntVarP(&co.concurrency, "concurrency", "j", 8, "with -r: parallel requests")
+	f.IntVar(&co.maxPages, "max-pages", 0, "with -r: stop after N pages (0 = no limit)")
+	f.BoolVar(&co.rows, "rows-pages", true, "with -r: read the content of every database row")
 	return cmd
 }
 
@@ -300,9 +311,9 @@ func (e *env) printPage(page *notion.Record, o fetchOpts) error {
 			fields = append(fields, [2]any{d.Name, props[d.Name]})
 		}
 	}
-	fmt.Print(frontMatter(fields))
+	fmt.Fprint(e.w(), frontMatter(fields))
 	if !o.noBody {
-		fmt.Print(body)
+		fmt.Fprint(e.w(), body)
 	}
 	return nil
 }
@@ -334,7 +345,7 @@ func (e *env) printBlock(blk *notion.Record, o fetchOpts) error {
 	if gf.json {
 		return printJSON(map[string]any{"id": blk.ID, "type": blk.Type(), "parent_id": blk.Str("parent_id"), "markdown": md, "record": blk.Value})
 	}
-	fmt.Print(md)
+	fmt.Fprint(e.w(), md)
 	return nil
 }
 
@@ -370,6 +381,7 @@ func (e *env) printCollectionWithViews(blk, coll *notion.Record, views []*notion
 		if err != nil {
 			return err
 		}
+		e.lastRowIDs = res.BlockIDs
 		var rows []*notion.Record
 		for _, id := range res.BlockIDs {
 			if r := st.Records.Block(id); r != nil {
@@ -432,41 +444,41 @@ func (e *env) printCollectionWithViews(blk, coll *notion.Record, views []*notion
 		return printJSON(out)
 	}
 
-	fmt.Print(frontMatter([][2]any{{"id", id}, {"url", url}, {"collection_id", coll.ID}, {"title", notion.CollectionName(coll)}, {"type", "database"}}))
+	fmt.Fprint(e.w(), frontMatter([][2]any{{"id", id}, {"url", url}, {"collection_id", coll.ID}, {"title", notion.CollectionName(coll)}, {"type", "database"}}))
 	if d := notion.RichToMarkdown(asSlice(coll.Value["description"]), st); d != "" {
-		fmt.Println(d)
-		fmt.Println()
+		fmt.Fprintln(e.w(), d)
+		fmt.Fprintln(e.w())
 	}
-	fmt.Println("## Schema")
+	fmt.Fprintln(e.w(), "## Schema")
 	for _, s := range schema {
 		extra := ""
 		if opts, ok := s["options"].([]string); ok {
 			extra = " — options: " + strings.Join(opts, ", ")
 		}
-		fmt.Printf("- %s (%s)%s\n", s["name"], s["type"], extra)
+		fmt.Fprintf(e.w(), "- %s (%s)%s\n", s["name"], s["type"], extra)
 	}
 	if len(viewList) > 0 {
-		fmt.Println("\n## Views")
+		fmt.Fprintln(e.w(), "\n## Views")
 		for _, v := range viewList {
 			mark := ""
 			if view != nil && v["id"] == view.ID {
 				mark = " ← rows below use this view"
 			}
-			fmt.Printf("- %s (%s) %s%s\n", v["name"], v["type"], v["url"], mark)
+			fmt.Fprintf(e.w(), "- %s (%s) %s%s\n", v["name"], v["type"], v["url"], mark)
 		}
 	}
 	if res != nil {
-		fmt.Printf("\n## Rows (%d shown", len(rows))
+		fmt.Fprintf(e.w(), "\n## Rows (%d shown", len(rows))
 		if res.HasMore {
-			fmt.Printf(", more available — use `notion db query`")
+			fmt.Fprintf(e.w(), ", more available — use `notion db query`")
 		}
-		fmt.Println(")")
-		printRowsTable(rows, defs)
+		fmt.Fprintln(e.w(), ")")
+		printRowsTable(e.w(), rows, defs)
 	}
 	return nil
 }
 
-func printRowsTable(rows []map[string]any, defs []notion.PropDef) {
+func printRowsTable(w io.Writer, rows []map[string]any, defs []notion.PropDef) {
 	cell := func(s string) string {
 		s = strings.ReplaceAll(s, "\n", "<br>")
 		return strings.ReplaceAll(s, "|", `\|`)
@@ -476,8 +488,8 @@ func printRowsTable(rows []map[string]any, defs []notion.PropDef) {
 		header = append(header, cell(d.Name))
 	}
 	header = append(header, "url")
-	fmt.Println("| " + strings.Join(header, " | ") + " |")
-	fmt.Println("|" + strings.Repeat(" --- |", len(header)))
+	fmt.Fprintln(w, "| "+strings.Join(header, " | ")+" |")
+	fmt.Fprintln(w, "|"+strings.Repeat(" --- |", len(header)))
 	for _, r := range rows {
 		props := r["properties"].(map[string]any)
 		vals := []string{}
@@ -485,7 +497,7 @@ func printRowsTable(rows []map[string]any, defs []notion.PropDef) {
 			vals = append(vals, cell(displayValue(props[d.Name])))
 		}
 		vals = append(vals, fmt.Sprint(r["url"]))
-		fmt.Println("| " + strings.Join(vals, " | ") + " |")
+		fmt.Fprintln(w, "| "+strings.Join(vals, " | ")+" |")
 	}
 }
 

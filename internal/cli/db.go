@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -176,7 +177,7 @@ func newDBQueryCmd() *cobra.Command {
 			if gf.json {
 				return printJSON(map[string]any{"rows": rows, "has_more": res.HasMore, "count": len(rows)})
 			}
-			printRowsTable(rows, defs)
+			printRowsTable(os.Stdout, rows, defs)
 			if res.HasMore {
 				fmt.Printf("\n(%d rows shown; more available — raise --limit)\n", len(rows))
 			}

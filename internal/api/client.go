@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/subdiox/notion-cli/internal/auth"
@@ -26,10 +28,116 @@ type Client struct {
 	SpaceID string // active space (x-notion-space-id)
 	HTTP    *http.Client
 	Debug   bool
+	// throttles (one per endpoint) are shared by copies of the client so a
+	// 429 seen by one worker slows all of them down — but only for that
+	// endpoint, since Notion limits endpoints independently.
+	throttles *throttleSet
+}
+
+type throttleSet struct {
+	mu sync.Mutex
+	m  map[string]*throttle
+}
+
+func (c *Client) throttle(endpoint string) *throttle {
+	if c.throttles == nil {
+		c.throttles = &throttleSet{}
+	}
+	ts := c.throttles
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.m == nil {
+		ts.m = map[string]*throttle{}
+	}
+	t := ts.m[endpoint]
+	if t == nil {
+		t = &throttle{}
+		ts.m[endpoint] = t
+	}
+	return t
+}
+
+// Degraded reports whether an endpoint is currently being rate limited.
+func (c *Client) Degraded(endpoint string) bool {
+	t := c.throttle(endpoint)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return time.Now().Before(t.until) || (t.rate != 0 && t.rate < initialRate/2)
+}
+
+type noRetryKey struct{}
+
+// WithoutRateLimitRetry makes 429 responses fail fast (for callers with a fallback).
+func WithoutRateLimitRetry(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noRetryKey{}, true)
+}
+
+// IsRateLimited reports whether err is a 429 from Notion.
+func IsRateLimited(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == 429
+}
+
+// throttle is an adaptive (AIMD) client-side rate limiter: requests are
+// spaced 1/rate apart; a 429 halves the rate and pauses everyone, and each
+// success raises the rate slightly. This keeps bulk reads just under Notion's
+// per-user limit instead of repeatedly tripping it.
+type throttle struct {
+	mu    sync.Mutex
+	rate  float64 // requests per second
+	next  time.Time
+	until time.Time // cooldown after a 429
+}
+
+const (
+	minRate     = 1.0
+	maxRate     = 40.0
+	initialRate = 12.0
+)
+
+func (t *throttle) acquire(ctx context.Context) error {
+	t.mu.Lock()
+	if t.rate == 0 {
+		t.rate = initialRate
+	}
+	now := time.Now()
+	at := now
+	if t.until.After(at) {
+		at = t.until
+	}
+	if t.next.After(at) {
+		at = t.next
+	}
+	t.next = at.Add(time.Duration(float64(time.Second) / t.rate))
+	t.mu.Unlock()
+	if d := time.Until(at); d > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+		}
+	}
+	return nil
+}
+
+func (t *throttle) success() {
+	t.mu.Lock()
+	t.rate = min(maxRate, t.rate+0.05)
+	t.mu.Unlock()
+}
+
+func (t *throttle) limited(d time.Duration) float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rate = max(minRate, t.rate/2)
+	if u := time.Now().Add(d); u.After(t.until) {
+		t.until = u
+	}
+	return t.rate
 }
 
 func New(s *auth.Session, userID, spaceID string) *Client {
-	return &Client{Session: s, UserID: userID, SpaceID: spaceID, HTTP: &http.Client{Timeout: 120 * time.Second}}
+	return &Client{Session: s, UserID: userID, SpaceID: spaceID, HTTP: &http.Client{Timeout: 120 * time.Second}, throttles: &throttleSet{}}
 }
 
 // APIError is a non-2xx response from Notion.
@@ -90,7 +198,12 @@ func (c *Client) Raw(ctx context.Context, endpoint string, body any) ([]byte, er
 		return nil, err
 	}
 	u := c.Session.Origin + "/api/v3/" + strings.TrimPrefix(endpoint, "/")
+	th := c.throttle(endpoint)
+	noRetry, _ := ctx.Value(noRetryKey{}).(bool)
 	for attempt := 0; ; attempt++ {
+		if err := th.acquire(ctx); err != nil {
+			return nil, err
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
@@ -117,11 +230,21 @@ func (c *Client) Raw(ctx context.Context, endpoint string, body any) ([]byte, er
 		if c.Debug {
 			fmt.Fprintf(os.Stderr, "← %d %s (%s) %s\n", resp.StatusCode, endpoint, time.Since(start).Round(time.Millisecond), truncate(string(data), 2000))
 		}
-		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			if attempt < 5 {
-				time.Sleep(backoff(attempt, resp.Header.Get("Retry-After")))
+		if resp.StatusCode == 429 {
+			d := max(backoff(attempt, resp.Header.Get("Retry-After")), 2*time.Second)
+			r := th.limited(d)
+			if c.Debug {
+				fmt.Fprintf(os.Stderr, "rate limited on %s; pausing %s, rate now %.1f req/s\n", endpoint, d, r)
+			}
+			if attempt < 12 && !noRetry {
 				continue
 			}
+		} else if resp.StatusCode/100 == 2 {
+			th.success()
+		}
+		if resp.StatusCode >= 500 && attempt < 5 {
+			time.Sleep(backoff(attempt, resp.Header.Get("Retry-After")))
+			continue
 		}
 		if resp.StatusCode/100 != 2 {
 			apiErr := &APIError{Status: resp.StatusCode, Endpoint: endpoint, Body: string(data)}
@@ -151,7 +274,7 @@ func backoff(attempt int, retryAfter string) time.Duration {
 	if s, err := strconv.Atoi(retryAfter); err == nil && s > 0 {
 		return time.Duration(s) * time.Second
 	}
-	return time.Duration(500*(1<<attempt)) * time.Millisecond
+	return min(time.Duration(500*(1<<attempt))*time.Millisecond, 30*time.Second)
 }
 
 func truncate(s string, n int) string {

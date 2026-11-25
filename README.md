@@ -55,6 +55,8 @@ notion fetch <url|id>                      # page → front matter + Markdown bo
 notion fetch <url> --download-assets ./img # also download images/files, link local paths
 notion fetch <url> --signed-urls           # temporary URLs for Notion-hosted files
 notion fetch <database-url>                # schema, views and the first rows
+notion fetch <url> -r -o ./dump            # EVERYTHING below: sub-pages, databases, every row's content
+                                           #   (concurrent; ~650 pages / 90 DBs / 1,800 rows in ~35 s)
 notion db query <db> -w "Status=Done" -w "Due<=today" --sort Due:desc -n 200
 notion block ls <page>                     # child blocks with IDs
 notion comment ls <page>
