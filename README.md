@@ -21,6 +21,9 @@ go install github.com/subdiox/notion-cli/cmd/notion@latest
 go build -o ~/bin/notion ./cmd/notion
 ```
 
+Prebuilt binaries for macOS, Linux and Windows (amd64 / arm64) are attached to
+each [release](https://github.com/subdiox/notion-cli/releases).
+
 ## Login
 
 ```sh
