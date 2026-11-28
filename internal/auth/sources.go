@@ -25,52 +25,119 @@ type Source struct {
 
 func home() string { h, _ := os.UserHomeDir(); return h }
 
-func chromiumSource(name, desc, userDataDir, keychainService string) Source {
+// macAppSupport is ~/Library/Application Support.
+func macAppSupport() string { return filepath.Join(home(), "Library", "Application Support") }
+
+// globAll returns the matches of every pattern, in order.
+func globAll(patterns ...string) []string {
+	var paths []string
+	for _, pattern := range patterns {
+		m, _ := filepath.Glob(pattern)
+		paths = append(paths, m...)
+	}
+	return paths
+}
+
+// winDirs returns the Windows user's folders when the sources are Windows
+// apps (native Windows build, or WSL).
+func winDirs() (windowsDirs, bool, error) {
+	if !onWindows() {
+		return windowsDirs{}, false, nil
+	}
+	d, err := getWindowsDirs()
+	return d, true, err
+}
+
+// chromiumSource is a Chromium-based browser. macDir is its user data
+// directory under ~/Library/Application Support; winDir under %LOCALAPPDATA%
+// on Windows (native or from WSL), as a glob pattern; "" when there is none.
+func chromiumSource(name, desc, macDir, winDir, keychainService string) Source {
 	return Source{
 		Name: name,
 		Desc: desc,
 		discover: func() ([]string, error) {
-			base := filepath.Join(home(), "Library", "Application Support", userDataDir)
-			var paths []string
-			for _, pattern := range []string{"*/Cookies", "*/Network/Cookies"} {
-				m, _ := filepath.Glob(filepath.Join(base, pattern))
-				paths = append(paths, m...)
+			wd, win, err := winDirs()
+			if err != nil {
+				return nil, err
 			}
-			return paths, nil
+			if win {
+				if winDir == "" {
+					return nil, nil
+				}
+				base := filepath.Join(wd.LocalAppData, winDir)
+				return globAll(filepath.Join(base, "*", "Network", "Cookies"), filepath.Join(base, "*", "Cookies")), nil
+			}
+			base := filepath.Join(macAppSupport(), macDir)
+			return globAll(filepath.Join(base, "*", "Cookies"), filepath.Join(base, "*", "Network", "Cookies")), nil
 		},
-		read: func(path string) ([]Cookie, error) { return readChromiumCookies(path, keychainService) },
+		read: func(path string) ([]Cookie, error) {
+			if onWindows() {
+				return readChromiumCookies(path, windowsDecrypter(path))
+			}
+			return readChromiumCookies(path, macDecrypter(keychainService))
+		},
 	}
 }
 
-// Sources lists every supported import source (macOS paths).
+// existing returns the paths that exist.
+func existing(paths ...string) []string {
+	var out []string
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Sources lists every supported import source: macOS paths, or on Windows
+// (native or WSL) the Windows apps' paths.
 var Sources = []Source{
 	{
 		Name:    "desktop",
 		Aliases: []string{"app", "notion"},
 		Desc:    "Notion desktop app",
 		discover: func() ([]string, error) {
-			base := filepath.Join(home(), "Library", "Application Support", "Notion")
-			var paths []string
-			for _, p := range []string{filepath.Join(base, "Partitions", "notion", "Cookies"), filepath.Join(base, "Cookies")} {
-				if _, err := os.Stat(p); err == nil {
-					paths = append(paths, p)
-				}
+			wd, win, err := winDirs()
+			if err != nil {
+				return nil, err
 			}
-			return paths, nil
+			if win {
+				base := filepath.Join(wd.AppData, "Notion")
+				return existing(
+					filepath.Join(base, "Partitions", "notion", "Network", "Cookies"),
+					filepath.Join(base, "Partitions", "notion", "Cookies"),
+					filepath.Join(base, "Network", "Cookies"),
+				), nil
+			}
+			base := filepath.Join(macAppSupport(), "Notion")
+			return existing(filepath.Join(base, "Partitions", "notion", "Cookies"), filepath.Join(base, "Cookies")), nil
 		},
-		read: func(path string) ([]Cookie, error) { return readChromiumCookies(path, "Notion Safe Storage") },
+		read: func(path string) ([]Cookie, error) {
+			if onWindows() {
+				return readChromiumCookies(path, windowsDecrypter(path))
+			}
+			return readChromiumCookies(path, macDecrypter("Notion Safe Storage"))
+		},
 	},
-	chromiumSource("chrome", "Google Chrome", "Google/Chrome", "Chrome Safe Storage"),
-	chromiumSource("arc", "Arc", "Arc/User Data", "Arc Safe Storage"),
-	chromiumSource("brave", "Brave", "BraveSoftware/Brave-Browser", "Brave Safe Storage"),
-	chromiumSource("edge", "Microsoft Edge", "Microsoft Edge", "Microsoft Edge Safe Storage"),
-	chromiumSource("vivaldi", "Vivaldi", "Vivaldi", "Vivaldi Safe Storage"),
-	chromiumSource("chromium", "Chromium", "Chromium", "Chromium Safe Storage"),
+	chromiumSource("chrome", "Google Chrome", "Google/Chrome", "Google/Chrome/User Data", "Chrome Safe Storage"),
+	chromiumSource("arc", "Arc", "Arc/User Data", "Packages/TheBrowserCompany.Arc_*/LocalCache/Local/Arc/User Data", "Arc Safe Storage"),
+	chromiumSource("brave", "Brave", "BraveSoftware/Brave-Browser", "BraveSoftware/Brave-Browser/User Data", "Brave Safe Storage"),
+	chromiumSource("edge", "Microsoft Edge", "Microsoft Edge", "Microsoft/Edge/User Data", "Microsoft Edge Safe Storage"),
+	chromiumSource("vivaldi", "Vivaldi", "Vivaldi", "Vivaldi/User Data", "Vivaldi Safe Storage"),
+	chromiumSource("chromium", "Chromium", "Chromium", "Chromium/User Data", "Chromium Safe Storage"),
 	{
 		Name: "firefox",
 		Desc: "Firefox",
 		discover: func() ([]string, error) {
-			return filepath.Glob(filepath.Join(home(), "Library", "Application Support", "Firefox", "Profiles", "*", "cookies.sqlite"))
+			wd, win, err := winDirs()
+			if err != nil {
+				return nil, err
+			}
+			if win {
+				return filepath.Glob(filepath.Join(wd.AppData, "Mozilla", "Firefox", "Profiles", "*", "cookies.sqlite"))
+			}
+			return filepath.Glob(filepath.Join(macAppSupport(), "Firefox", "Profiles", "*", "cookies.sqlite"))
 		},
 		read: readFirefoxCookies,
 	},
@@ -91,17 +158,11 @@ func FindSource(name string) (Source, error) {
 }
 
 func readFirefoxCookies(path string) ([]Cookie, error) {
-	tmp, err := os.MkdirTemp("", "notion-cli-ff-")
+	dst, cleanup, err := copyCookieDB(path, "cookies.sqlite")
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
-	dst := filepath.Join(tmp, "cookies.sqlite")
-	for _, suffix := range []string{"", "-wal"} {
-		if b, err := os.ReadFile(path + suffix); err == nil {
-			_ = os.WriteFile(dst+suffix, b, 0o600)
-		}
-	}
+	defer cleanup()
 	db, err := sql.Open("sqlite", "file:"+dst+"?mode=ro")
 	if err != nil {
 		return nil, err

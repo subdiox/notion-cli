@@ -8,7 +8,11 @@ user's `token_v2` session cookie. Primary users are AI agents: Markdown output b
 
 - `internal/auth` — cookie import. Chromium-format stores (Notion desktop app = Electron,
   `~/Library/Application Support/Notion/Partitions/notion/Cookies`, keychain item
-  "Notion Safe Storage"; Chrome/Arc/Brave/Edge/...) and Firefox.
+  "Notion Safe Storage"; Chrome/Arc/Brave/Edge/...) and Firefox. On Windows (native build,
+  or the Linux build under WSL: `wincookies*.go`) the stores are under `%APPDATA%` /
+  `%LOCALAPPDATA%` (desktop app: `%APPDATA%\Notion\Partitions\notion\Network\Cookies`),
+  the key is `os_crypt.encrypted_key` in "Local State" (DPAPI; WSL asks `powershell.exe`)
+  and values are AES-256-GCM. Windows locks the DB while the app runs.
 - `internal/api` — HTTP client (`Call`, `Raw`, `Download`), retries on 429/5xx.
 - `internal/notion` — record model, `Store` (record cache), Markdown renderer
   (`render.go`) and parser (`mdblock.go`, `mdinline.go`), `Writer` (create / diff-sync),

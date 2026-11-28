@@ -26,12 +26,23 @@ go build -o ~/bin/notion ./cmd/notion
 ```sh
 notion auth import                 # auto: desktop app, then Chrome/Arc/Brave/Edge/Vivaldi/Chromium/Firefox
 notion auth import --from chrome   # a specific source
-notion auth set-token <token_v2>   # manual (e.g. Linux/Windows; copy the cookie from devtools)
+notion auth set-token <token_v2>   # manual (e.g. Linux; copy the cookie from devtools)
 notion auth status                 # logged-in accounts (multi-account sessions are supported)
 ```
 
-Cookie import is macOS-only for now. Chromium-based sources read their
-"Safe Storage" key from the keychain, so macOS asks for permission once.
+Cookie import works on macOS and Windows, including the Linux build under WSL
+(which reads the Windows apps through `/mnt/c`):
+
+- **macOS**: Chromium-based sources read their "Safe Storage" key from the
+  keychain, so macOS asks for permission once.
+- **Windows / WSL**: the cookie key is unprotected with DPAPI as the current
+  Windows user (WSL calls `powershell.exe` for it). Windows locks a Chromium
+  app's cookie store while the app runs, so **quit the Notion desktop app
+  (also from the tray) before `notion auth import`**; the session stays valid
+  after you reopen it. Chrome and Edge use app-bound encryption ("v20"), which
+  only the browser itself can decrypt: use the desktop app, Firefox or
+  `set-token` instead.
+
 The session is stored in `~/.config/notion-cli/session.json` (0600).
 `NOTION_TOKEN_V2` / `NOTION_CLI_HOME` override it.
 
