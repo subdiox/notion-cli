@@ -22,8 +22,12 @@ func newAuthCmd() *cobra.Command {
 Every profile of the selected source(s) is tried and each session found is
 verified against the API; the working one with the most accounts wins
 (ties go to the first found: desktop app first, then browsers in the order above).
-Chromium-based sources read their "Safe Storage" key from the macOS keychain,
-which may show an access prompt.`,
+On macOS, Chromium-based sources read their "Safe Storage" key from the
+keychain, which may show an access prompt. On Windows (notion.exe, or the Linux
+build under WSL) they are read from the Windows profile and the key is
+unprotected with DPAPI; quit the app first, since Windows locks its cookie
+store while it runs. Chrome/Edge's app-bound encryption cannot be read: use the
+desktop app or Firefox there.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cands, err := auth.Candidates(from)
 			if err != nil {
