@@ -25,7 +25,8 @@ jobs:
 
   build:
     needs: test
-    runs-on: ubuntu-latest
+    # darwin builds run on macOS so they can be signed and notarized there.
+    runs-on: ${{ matrix.goos == 'darwin' && 'macos-latest' || 'ubuntu-latest' }}
     strategy:
       matrix:
         include:
@@ -35,6 +36,10 @@ jobs:
           - { goos: linux, goarch: arm64 }
           - { goos: windows, goarch: amd64 }
           - { goos: windows, goarch: arm64 }
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: "0"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,10 +48,6 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="$(git describe --tags --always)"; fi
           name="notion_${version}_${GOOS}_${GOARCH}"
@@ -54,9 +55,63 @@ jobs:
           mkdir -p "dist/$name"
           go build -trimpath -ldflags "-s -w -X github.com/subdiox/notion-cli/internal/cli.Version=$version" -o "dist/$name/$exe" ./cmd/notion
           cp README.md LICENSE "dist/$name/"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+          echo "BIN=dist/$name/$exe" >> "$GITHUB_ENV"
+      # Secrets: MACOS_CERT_P12 (base64 of the Developer ID Application .p12),
+      # MACOS_CERT_PASSWORD, and an App Store Connect API key for notarization:
+      # ASC_KEY_P8 (contents of AuthKey_<id>.p8), ASC_KEY_ID, ASC_ISSUER_ID.
+      - name: Sign and notarize
+        if: matrix.goos == 'darwin'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ] || [ -z "$ASC_KEY_P8" ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then echo "::error::signing secrets are not set"; exit 1; fi
+            echo "::warning::signing secrets are not set; leaving the binary unsigned"; exit 0
+          fi
+          kc="$RUNNER_TEMP/sign.keychain-db"
+          kcpw="$(uuidgen)"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc"
+
+          codesign --force --options runtime --timestamp --keychain "$kc" \
+            -s "Developer ID Application" -i io.github.subdiox.notion-cli "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/key.p8"
+          ditto -c -k "$BIN" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
+            --key "$RUNNER_TEMP/key.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" > "$RUNNER_TEMP/notary.json"
+          cat "$RUNNER_TEMP/notary.json"
+          status="$(plutil -extract status raw "$RUNNER_TEMP/notary.json")"
+          if [ "$status" != Accepted ]; then
+            xcrun notarytool log "$(plutil -extract id raw "$RUNNER_TEMP/notary.json")" \
+              --key "$RUNNER_TEMP/key.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            exit 1
+          fi
+          # A bare Mach-O binary cannot be stapled; Gatekeeper checks the ticket online.
+      - name: Clean up signing keychain
+        if: always() && matrix.goos == 'darwin'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sign.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/key.p8"
+      - name: Package
+        env:
+          COPYFILE_DISABLE: "1" # no AppleDouble ._ files from macOS tar
+        run: |
           cd dist
-          if [ "$GOOS" = windows ]; then zip -qr "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
-          rm -r "$name"
+          if [ "$GOOS" = windows ]; then zip -qr "$NAME.zip" "$NAME"; else tar czf "$NAME.tar.gz" "$NAME"; fi
+          rm -r "$NAME"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.goos }}-${{ matrix.goarch }}
