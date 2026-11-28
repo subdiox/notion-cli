@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/subdiox/notion-cli/internal/api"
+	"github.com/subdiox/notion-cli/internal/auth"
 	"github.com/subdiox/notion-cli/internal/config"
 	"github.com/subdiox/notion-cli/internal/notion"
 )
@@ -76,6 +77,11 @@ func newEnv(cmd *cobra.Command) (*env, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newEnvWithSession(cmd, s)
+}
+
+// newEnvWithSession is newEnv for a session that is not (yet) stored.
+func newEnvWithSession(cmd *cobra.Command, s *auth.Session) (*env, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err

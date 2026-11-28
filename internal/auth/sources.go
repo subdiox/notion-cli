@@ -8,13 +8,16 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 // Source describes where a Notion session can be imported from.
 type Source struct {
 	Name     string
+	Aliases  []string
 	Desc     string
 	discover func() ([]string, error) // cookie DB paths
 	read     func(path string) ([]Cookie, error)
@@ -42,8 +45,9 @@ func chromiumSource(name, desc, userDataDir, keychainService string) Source {
 // Sources lists every supported import source (macOS paths).
 var Sources = []Source{
 	{
-		Name: "desktop",
-		Desc: "Notion desktop app",
+		Name:    "desktop",
+		Aliases: []string{"app", "notion"},
+		Desc:    "Notion desktop app",
 		discover: func() ([]string, error) {
 			base := filepath.Join(home(), "Library", "Application Support", "Notion")
 			var paths []string
@@ -75,7 +79,7 @@ var Sources = []Source{
 // FindSource returns the source with the given name.
 func FindSource(name string) (Source, error) {
 	for _, s := range Sources {
-		if s.Name == name {
+		if s.Name == name || slices.Contains(s.Aliases, name) {
 			return s, nil
 		}
 	}
@@ -130,47 +134,78 @@ type Session struct {
 	DeviceID  string   `json:"device_id,omitempty"`
 }
 
-// Import extracts a session from the named source. If several cookie DBs
-// (browser profiles) contain a Notion login, the first one with token_v2 wins.
-func Import(sourceName string) (*Session, error) {
+// Candidate is a session found in one cookie store (browser profile).
+type Candidate struct {
+	Session *Session
+	Path    string // cookie DB the session came from
+}
+
+// Profile returns a short human-readable label for the cookie store, e.g.
+// "Profile 1" for Chrome or the profile directory name for Firefox.
+func (c Candidate) Profile() string {
+	dir := filepath.Dir(c.Path)
+	if filepath.Base(dir) == "Network" {
+		dir = filepath.Dir(dir)
+	}
+	return filepath.Base(dir)
+}
+
+// Candidates returns every Notion session found in the named source, one per
+// cookie store (browser profile) that holds a token_v2. "auto" (or "")
+// searches all sources. Sessions with the same token_v2 are reported once.
+// The error is non-nil only when nothing was found; it then explains why
+// each source failed.
+func Candidates(sourceName string) ([]Candidate, error) {
+	var srcs []Source
 	if sourceName == "auto" || sourceName == "" {
-		var errs []string
-		for _, src := range Sources {
-			s, err := Import(src.Name)
-			if err == nil {
-				return s, nil
-			}
-			errs = append(errs, src.Name+": "+err.Error())
-		}
-		return nil, fmt.Errorf("no Notion login found:\n  %s", strings.Join(errs, "\n  "))
-	}
-	src, err := FindSource(sourceName)
-	if err != nil {
-		return nil, err
-	}
-	paths, err := src.discover()
-	if err != nil {
-		return nil, err
-	}
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("no cookie store found for %s", src.Desc)
-	}
-	var lastErr error
-	for _, p := range paths {
-		cookies, err := src.read(p)
+		srcs = Sources
+	} else {
+		src, err := FindSource(sourceName)
 		if err != nil {
-			lastErr = err
+			return nil, err
+		}
+		srcs = []Source{src}
+	}
+	var out []Candidate
+	var errs []string
+	seen := map[string]bool{}
+	for _, src := range srcs {
+		paths, err := src.discover()
+		if err != nil {
+			errs = append(errs, src.Name+": "+err.Error())
 			continue
 		}
-		if s := sessionFromCookies(cookies); s != nil {
-			s.Source = sourceName
-			return s, nil
+		if len(paths) == 0 {
+			errs = append(errs, src.Name+": no cookie store found")
+			continue
+		}
+		found := false
+		for _, p := range paths {
+			cookies, err := src.read(p)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s (%s): %v", src.Name, p, err))
+				continue
+			}
+			s := sessionFromCookies(cookies)
+			if s == nil {
+				continue
+			}
+			found = true
+			if seen[s.TokenV2] {
+				continue
+			}
+			seen[s.TokenV2] = true
+			s.Source = src.Name
+			out = append(out, Candidate{Session: s, Path: p})
+		}
+		if !found {
+			errs = append(errs, src.Name+": no Notion login (token_v2) in "+strconv.Itoa(len(paths))+" cookie store(s)")
 		}
 	}
-	if lastErr != nil {
-		return nil, lastErr
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no Notion login found:\n  %s", strings.Join(errs, "\n  "))
 	}
-	return nil, fmt.Errorf("no Notion login (token_v2) found in %s", src.Desc)
+	return out, nil
 }
 
 func sessionFromCookies(cookies []Cookie) *Session {

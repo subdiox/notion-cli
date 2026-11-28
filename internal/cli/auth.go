@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,37 +14,81 @@ import (
 func newAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "auth", Short: "Manage the Notion session (token_v2)"}
 
-	var from string
+	var from, profile string
 	importCmd := &cobra.Command{
 		Use:   "import",
 		Short: "Import the session from the Notion desktop app or a browser",
 		Long: "Import token_v2 from a local cookie store. Sources: " + sourceNames() + `.
+Every profile of the selected source(s) is tried and each session found is
+verified against the API; the working one with the most accounts wins
+(ties go to the first found: desktop app first, then browsers in the order above).
 Chromium-based sources read their "Safe Storage" key from the macOS keychain,
 which may show an access prompt.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := auth.Import(from)
+			cands, err := auth.Candidates(from)
 			if err != nil {
 				return err
+			}
+			if profile != "" {
+				var keep []auth.Candidate
+				for _, c := range cands {
+					if strings.EqualFold(c.Profile(), profile) || strings.Contains(c.Path, profile) {
+						keep = append(keep, c)
+					}
+				}
+				if len(keep) == 0 {
+					return fmt.Errorf("no Notion login in profile %q (found: %s)", profile, candidateLabels(cands))
+				}
+				cands = keep
+			}
+			var best *auth.Candidate
+			var bestUsers []account
+			for i := range cands {
+				c := &cands[i]
+				label := c.Session.Source + "/" + c.Profile()
+				e, err := newEnvWithSession(cmd, c.Session)
+				if err != nil {
+					return err
+				}
+				// A stored active user may belong to another session; verify as
+				// this session's own (first) user unless --user was given.
+				if gf.user == "" {
+					e.client.UserID = ""
+					if len(c.Session.UserIDs) > 0 {
+						e.client.UserID = c.Session.UserIDs[0]
+					}
+				}
+				users, err := e.loadAccounts()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  %s: rejected (%v)\n", label, err)
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "  %s: %d account(s)\n", label, len(users))
+				if best == nil || len(users) > len(bestUsers) {
+					best, bestUsers = c, users
+				}
+			}
+			if best == nil {
+				return fmt.Errorf("found %d session(s) but none was accepted by Notion (expired?)", len(cands))
+			}
+			s := best.Session
+			if len(s.UserIDs) == 0 {
+				for _, u := range bestUsers {
+					s.UserIDs = append(s.UserIDs, u.ID)
+				}
 			}
 			if err := config.SaveSession(s); err != nil {
 				return err
 			}
-			e, err := newEnv(cmd)
-			if err != nil {
-				return err
-			}
-			users, err := e.loadAccounts()
-			if err != nil {
-				return fmt.Errorf("session imported but verification failed: %w", err)
-			}
-			fmt.Printf("Imported session from %s (%s)\n", s.Source, s.Origin)
-			for _, u := range users {
+			fmt.Printf("Imported session from %s/%s (%s)\n", s.Source, best.Profile(), s.Origin)
+			for _, u := range bestUsers {
 				fmt.Printf("  %s <%s> %s\n", u.Name, u.Email, u.ID)
 			}
 			return nil
 		},
 	}
-	importCmd.Flags().StringVar(&from, "from", "auto", "source: auto (first that works), "+sourceNames())
+	importCmd.Flags().StringVar(&from, "from", "auto", "source: auto (all), "+sourceNames())
+	importCmd.Flags().StringVar(&profile, "profile", "", `only this profile (directory name like "Profile 1", or a path substring)`)
 
 	tokenCmd := &cobra.Command{
 		Use:   "set-token <token_v2>",
@@ -115,6 +160,17 @@ func sourceNames() string {
 	names := make([]string, len(auth.Sources))
 	for i, s := range auth.Sources {
 		names[i] = s.Name
+		if len(s.Aliases) > 0 {
+			names[i] += " (" + strings.Join(s.Aliases, ", ") + ")"
+		}
 	}
 	return strings.Join(names, ", ")
+}
+
+func candidateLabels(cands []auth.Candidate) string {
+	var out []string
+	for _, c := range cands {
+		out = append(out, c.Session.Source+"/"+c.Profile())
+	}
+	return strings.Join(out, ", ")
 }
